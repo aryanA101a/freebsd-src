@@ -9,14 +9,6 @@ NO_LIBSA_CFLAGS=	yes
 LIB=	musl
 WARNS?=	4
 
-
-MUSLDIR=	${SRCTOP}/contrib/musl
-.if ${MACHINE_ARCH} == "amd64"
-MUSL_ARCH=	x86_64
-.else
-MUSL_ARCH=	${MACHINE_ARCH}
-.endif
-
 MUSL_ALLTYPES_H=	musl/bits/alltypes.h
 MUSL_SYSCALL_H=	musl/bits/syscall.h
 DPSRCS+=	${MUSL_ALLTYPES_H} ${MUSL_SYSCALL_H}
@@ -38,7 +30,6 @@ MUSL_PATHS= \
 	src/multibyte \
 	src/network \
 	src/select \
-	src/stdio \
 	src/stdlib \
 	src/ctype \
 	src/time \
@@ -55,40 +46,27 @@ MUSL_UPSTREAM_SRCS= \
 		connect.c \
 		dn_expand.c \
 		dns_parse.c \
-		__fclose_ca.c \
-		__fopen_rb_ca.c \
 		getsockname.c \
 		inet_aton.c \
 		inet_pton.c \
-		feof.c \
-		fgets.c \
 		if_nametoindex.c \
 		ioctl.c \
 		isalnum.c \
 		lookup_ipliteral.c \
-		lseek.c \
 		mbsrtowcs.c \
 		mbstowcs.c \
 		internal.c \
-		ofl.c \
 		poll.c \
 		qsort.c \
 		qsort_nr.c \
 		recvmsg.c \
-		resolvconf.c \
 		res_msend.c \
 		res_mkquery.c \
 		setsockopt.c \
 		sendmsg.c \
 		sendto.c \
 		socket.c \
-		syscall_ret.c \
-		__stdio_close.c \
-		__stdio_exit.c \
-		__stdio_read.c \
-		__stdio_seek.c \
-		__toread.c \
-		__uflow.c
+		syscall_ret.c
 
 MUSL_WRAPPER_SRCS= \
 		freeaddrinfo_wrapper.c \
@@ -97,15 +75,14 @@ MUSL_WRAPPER_SRCS= \
 
 MUSL_STUB_SRCS= \
 		lock_stub.c \
-		lockfile_stub.c \
 		pthread_stub.c \
+		resolvconf_stub.c \
 		vdso_stub.c
 
 MUSL_LOCAL_SRCS= \
 		calloc.c \
 		errno.c \
 		free.c \
-		getc.c \
 		syscall_cp.c
 
 MUSL_SRCS=	${MUSL_UPSTREAM_SRCS} \
