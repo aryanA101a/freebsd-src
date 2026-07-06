@@ -25,9 +25,9 @@ MUSL_CFLAGS=	-D_XOPEN_SOURCE=700 \
 		-I${MUSLDIR}/src/network
 
 MUSL_PATHS= \
+	src/fcntl \
 	src/internal \
 	src/misc \
-	src/multibyte \
 	src/network \
 	src/select \
 	src/stdlib \
@@ -46,6 +46,8 @@ MUSL_UPSTREAM_SRCS= \
 		connect.c \
 		dn_expand.c \
 		dns_parse.c \
+		fcntl.c \
+		gai_strerror.c \
 		getsockname.c \
 		inet_aton.c \
 		inet_pton.c \
@@ -53,9 +55,6 @@ MUSL_UPSTREAM_SRCS= \
 		ioctl.c \
 		isalnum.c \
 		lookup_ipliteral.c \
-		mbsrtowcs.c \
-		mbstowcs.c \
-		internal.c \
 		poll.c \
 		qsort.c \
 		qsort_nr.c \
@@ -83,6 +82,7 @@ MUSL_LOCAL_SRCS= \
 		calloc.c \
 		errno.c \
 		free.c \
+		lctrans_stub.c \
 		syscall_cp.c
 
 MUSL_SRCS=	${MUSL_UPSTREAM_SRCS} \

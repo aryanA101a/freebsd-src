@@ -1,7 +1,11 @@
+#include <stdlib.h>
+
 #define __fopen_rb_ca kboot_lookup_name_no_hosts
+#define mbstowcs(...) 0
 
 #include "lookup_name.c"
 
+#undef mbstowcs
 #undef __fopen_rb_ca
 
 FILE *
