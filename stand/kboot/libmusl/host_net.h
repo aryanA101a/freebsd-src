@@ -5,6 +5,7 @@
 #define HOST_AF_INET6		10
 #define HOST_SOCK_STREAM	1
 #define HOST_IPPROTO_TCP	6
+#define HOST_CLOCK_MONOTONIC	1
 #define HOST_EINTR		4
 #define HOST_EAGAIN		11
 
@@ -56,41 +57,6 @@ typedef struct host_addrinfo {
 	struct host_addrinfo *ai_next;
 } host_addrinfo;
 
-const char	*gai_strerror(int);
-
 int host_getaddrinfo(const char *node, const char *service,
     const host_addrinfo *hints, host_addrinfo **res);
 void host_freeaddrinfo(host_addrinfo *res);
-
-int socket (int, int, int);
-int connect (int, const struct host_sockaddr *, host_socklen_t);
-
-
-int clock_gettime(clockid_t clk, struct timespec *ts);
-
-
-#define POLLIN     0x001
-#define POLLOUT    0x004
-#define POLLERR    0x008
-#define POLLHUP    0x010
-#define POLLNVAL   0x020
-
-typedef unsigned long nfds_t;
-
-struct pollfd {
-	int fd;
-	short events;
-	short revents;
-};
-
-int poll (struct pollfd *, nfds_t, int);
-
-
-#define F_GETFL  3
-#define F_SETFL  4
-#define O_NONBLOCK    04000
-
-int fcntl(int, int, ...);
-
-#define SIZE_MAX        UINT64_MAX
-#define UINT64_MAX (0xffffffffffffffffu)

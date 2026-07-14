@@ -1,7 +1,12 @@
 #include "net.h"
+#include <stdint.h>
 #include <string.h>
 #include "host_net.h"
 #include "host_syscall.h"
+#include "musl_compat.h"
+
+#include "bearssl.h"
+#include "trust_anchors.inc"
 
 #define fprintf(x, ...) printf( __VA_ARGS__ )
 
@@ -32,17 +37,17 @@ struct url
     char path[PATH_LENGTH];
 };
 
-// struct tls_ctx
-// {
-//     br_ssl_client_context client;
-//     br_x509_minimal_context x509;
-//     unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
-// };
+struct tls_ctx
+{
+    br_ssl_client_context client;
+    br_x509_minimal_context x509;
+    unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
+};
 
 struct conn
 {
     int fd;
-    // struct tls_ctx tls;
+    struct tls_ctx tls;
 
     ssize_t (*read)(struct conn *conn, void *buf, size_t len,
                     int64_t deadline);
@@ -114,7 +119,7 @@ int64_t now_ms(void)
 {
     struct timespec ts;
 
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+    if (clock_gettime(HOST_CLOCK_MONOTONIC, &ts) != 0)
         return -1;
 
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
@@ -204,6 +209,134 @@ wait_for_socket(int fd, short events, int64_t deadline)
     }
 }
 
+static int
+run_brssl_engine(struct conn *conn, unsigned int target, int64_t deadline)
+{
+    br_ssl_engine_context *engine;
+
+    if (conn == NULL || conn->fd < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if (target != BR_SSL_SENDAPP && target != BR_SSL_RECVAPP)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if (deadline < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    engine = &conn->tls.client.eng;
+
+    for (;;)
+    {
+        unsigned st;
+        int sendrec, recvrec;
+        short events = 0;
+        int revents;
+
+        if (check_deadline(deadline) < 0)
+            return -1;
+
+        st = br_ssl_engine_current_state(engine);
+        if (st == BR_SSL_CLOSED)
+            return -1;
+
+        sendrec = ((st & BR_SSL_SENDREC) != 0);
+        recvrec = ((st & BR_SSL_RECVREC) != 0);
+
+        if (!sendrec)
+        {
+            if (st & target)
+                return 0;
+            if (st & BR_SSL_RECVAPP)
+            {
+                errno = EPROTO;
+                return -1;
+            }
+        }
+        if (!sendrec && !recvrec)
+        {
+            br_ssl_engine_flush(engine, 0);
+            continue;
+        }
+
+        if (sendrec)
+            events |= POLLOUT;
+        if (recvrec)
+            events |= POLLIN;
+
+        revents = wait_for_socket(conn->fd, events, deadline);
+        if (revents < 0)
+            return -1;
+
+        if (sendrec && (revents & POLLOUT))
+        {
+            unsigned char *buf;
+            size_t len;
+            ssize_t wlen;
+
+            buf = br_ssl_engine_sendrec_buf(engine, &len);
+            wlen = send(conn->fd, buf, len, 0);
+            if (wlen < 0)
+            {
+                int saved_errno = errno;
+
+                if (saved_errno == EINTR || saved_errno == EAGAIN ||
+                    saved_errno == EWOULDBLOCK)
+                    continue;
+
+                errno = saved_errno;
+                return -1;
+            }
+            if (wlen == 0)
+            {
+                errno = EPIPE;
+                return -1;
+            }
+
+            br_ssl_engine_sendrec_ack(engine, (size_t)wlen);
+            continue;
+        }
+
+        if (recvrec && (revents & POLLIN))
+        {
+            unsigned char *buf;
+            size_t len;
+            ssize_t rlen;
+
+            buf = br_ssl_engine_recvrec_buf(engine, &len);
+            rlen = recv(conn->fd, buf, len, 0);
+            if (rlen == 0)
+            {
+                errno = ECONNRESET;
+                return -1;
+            }
+            if (rlen < 0)
+            {
+                int saved_errno = errno;
+
+                if (saved_errno == EINTR || saved_errno == EAGAIN ||
+                    saved_errno == EWOULDBLOCK)
+                    continue;
+
+                errno = saved_errno;
+                return -1;
+            }
+
+            br_ssl_engine_recvrec_ack(engine, (size_t)rlen);
+            continue;
+        }
+
+        errno = EIO;
+        return -1;
+    }
+}
+
 ssize_t tcp_read(struct conn *conn, void *buf, size_t len, int64_t deadline)
 {
     for (;;)
@@ -276,6 +409,72 @@ ssize_t tcp_write(struct conn *conn, const void *buf, size_t len,
     }
 }
 int tcp_close(struct conn *conn)
+{
+    return host_close(conn->fd);
+}
+
+ssize_t tls_read(struct conn *conn, void *dst_buf, size_t len, int64_t deadline)
+{
+    unsigned char *buf;
+    size_t alen;
+
+    if (len == 0)
+    {
+        return 0;
+    }
+    if (check_deadline(deadline) < 0)
+        return -1;
+    if (run_brssl_engine(conn, BR_SSL_RECVAPP, deadline) < 0)
+    {
+        br_ssl_engine_context *engine = &conn->tls.client.eng;
+
+        if (br_ssl_engine_current_state(engine) == BR_SSL_CLOSED &&
+            br_ssl_engine_last_error(engine) == BR_ERR_OK)
+            return 0;
+
+        return -1;
+    }
+    if (check_deadline(deadline) < 0)
+        return -1;
+    buf = br_ssl_engine_recvapp_buf(&conn->tls.client.eng, &alen);
+    if (alen > len)
+    {
+        alen = len;
+    }
+    memcpy(dst_buf, buf, alen);
+    br_ssl_engine_recvapp_ack(&conn->tls.client.eng, alen);
+    return alen;
+}
+
+ssize_t tls_write(struct conn *conn, const void *src_buf, size_t len,
+                  int64_t deadline)
+{
+    unsigned char *buf;
+    size_t alen;
+
+    if (len == 0)
+    {
+        return 0;
+    }
+    if (check_deadline(deadline) < 0)
+        return -1;
+    if (run_brssl_engine(conn, BR_SSL_SENDAPP, deadline) < 0)
+    {
+        return -1;
+    }
+    if (check_deadline(deadline) < 0)
+        return -1;
+    buf = br_ssl_engine_sendapp_buf(&conn->tls.client.eng, &alen);
+    if (alen > len)
+    {
+        alen = len;
+    }
+    memcpy(buf, src_buf, alen);
+    br_ssl_engine_sendapp_ack(&conn->tls.client.eng, alen);
+    br_ssl_engine_flush(&conn->tls.client.eng, 0);
+    return alen;
+}
+int tls_close(struct conn *conn)
 {
     return host_close(conn->fd);
 }
@@ -555,11 +754,6 @@ int connect_url(struct conn *conn, const struct url *url)
 
     service = url->port[0] != '\0' ? url->port : url->protocol;
 
-    if (strcasecmp(url->protocol, "https") == 0)
-    {
-        return http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED, "https unsupported");
-    }
-
     int e;
     if ((e = host_getaddrinfo(url->hostname, service, &hints, &dns_res0)) != 0)
     {
@@ -605,9 +799,32 @@ int connect_url(struct conn *conn, const struct url *url)
         return http_fail(HTTP_ERR_CONNECT, "setting nonblocking mode");
     }
 
-    conn->read = tcp_read;
-    conn->write = tcp_write;
-    conn->close = tcp_close;
+    if (strcasecmp(url->protocol, "https") == 0)
+    {
+        br_ssl_client_init_full(
+            &conn->tls.client,
+            &conn->tls.x509,
+            TAs,
+            TAs_NUM);
+        br_ssl_engine_set_buffer(&conn->tls.client.eng, &conn->tls.iobuf, sizeof conn->tls.iobuf, 1);
+
+        if (!br_ssl_client_reset(&conn->tls.client,
+                                 url->hostname, 0))
+        {
+            conn_close(conn);
+            return http_fail(HTTP_ERR_CONNECT, "initializing TLS");
+        }
+
+        conn->read = tls_read;
+        conn->write = tls_write;
+        conn->close = tls_close;
+    }
+    else
+    {
+        conn->read = tcp_read;
+        conn->write = tcp_write;
+        conn->close = tcp_close;
+    }
 
     return HTTP_OK;
 }

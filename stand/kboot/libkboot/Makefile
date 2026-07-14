@@ -1,16 +1,29 @@
 .include <bsd.init.mk>
 
 LIB=	kboot
-WARNS?= 4
+WARNS?=	4
 
-.PATH:	${.CURDIR}/arch/${MACHINE_ARCH}
-CFLAGS+=-I${.CURDIR} -I${.CURDIR}/arch/${MACHINE_ARCH}
-CFLAGS+=-I${LDRSRC}
+CERT_DIR=	${SRCTOP}/secure/caroot/trusted
+TRUST_ANCHORS=	trust_anchors.inc
+BRSSL_TA=	${.OBJDIR:H}/tools/brssl_ta/brssl_ta
+
+${TRUST_ANCHORS}: ${BRSSL_TA} ${CERT_DIR}/*.pem
+	${BRSSL_TA} -q ${CERT_DIR}/*.pem > ${.TARGET}
+
+DPSRCS+=		${TRUST_ANCHORS}
+CLEANFILES+=		${TRUST_ANCHORS}
+
+BEARSSL=	${SRCTOP}/contrib/bearssl
 
 HOST_NET_CFLAGS=	-I${.CURDIR}/../libmusl
 
-CFLAGS.net.c+=		${HOST_NET_CFLAGS}
-CFLAGS.net.c+=			-Udouble -Ufloat
+CFLAGS.net.c+=	${HOST_NET_CFLAGS}
+CFLAGS.net.c+=	-I${BEARSSL}/inc
+CFLAGS.net.c+=	-Udouble -Ufloat
+
+.PATH:	${.CURDIR}/arch/${MACHINE_ARCH}
+CFLAGS+=	-I${.CURDIR} -I${.CURDIR}/arch/${MACHINE_ARCH}
+CFLAGS+=	-I${LDRSRC}
 
 SRCS=	crt1.c
 SRCS+=	dfk.c

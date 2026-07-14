@@ -27,6 +27,7 @@ MUSL_CFLAGS=	-D_XOPEN_SOURCE=700 \
 MUSL_PATHS= \
 	src/fcntl \
 	src/internal \
+	src/linux \
 	src/misc \
 	src/network \
 	src/select \
@@ -48,6 +49,8 @@ MUSL_UPSTREAM_SRCS= \
 		dns_parse.c \
 		fcntl.c \
 		gai_strerror.c \
+		getentropy.c \
+		getrandom.c \
 		getsockname.c \
 		inet_aton.c \
 		inet_pton.c \
@@ -58,10 +61,13 @@ MUSL_UPSTREAM_SRCS= \
 		poll.c \
 		qsort.c \
 		qsort_nr.c \
+		recv.c \
+		recvfrom.c \
 		recvmsg.c \
 		res_msend.c \
 		res_mkquery.c \
 		setsockopt.c \
+		send.c \
 		sendmsg.c \
 		sendto.c \
 		socket.c \
