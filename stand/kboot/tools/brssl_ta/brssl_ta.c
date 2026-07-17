@@ -1,4 +1,7 @@
-// Derived from contrib/bearssl/tools/*.c, for generating compile-time trust anchors from ca certificates.
+/*
+ * Derived from contrib/bearssl/tools/ for generating compile-time trust
+ * anchors from CA certificates.
+ */
 
 #include <stdlib.h>
 #include <string.h>

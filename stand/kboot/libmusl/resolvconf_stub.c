@@ -34,8 +34,8 @@ __get_resolv_conf(struct resolvconf *conf, char *search, size_t search_sz)
 					p++;
 				z = p;
 				while (*z &&
-					!(*z == ' ' || *z == '\t' || *z == '\n' ||
-						*z == '#'))
+				    !(*z == ' ' || *z == '\t' ||
+				    *z == '\n' || *z == '#'))
 					z++;
 				*z = 0;
 

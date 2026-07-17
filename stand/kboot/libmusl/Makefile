@@ -89,6 +89,7 @@ MUSL_LOCAL_SRCS= \
 		errno.c \
 		free.c \
 		lctrans_stub.c \
+		musl_compat.c \
 		syscall_cp.c
 
 MUSL_SRCS=	${MUSL_UPSTREAM_SRCS} \

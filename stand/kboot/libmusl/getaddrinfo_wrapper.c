@@ -1,4 +1,4 @@
-#define getaddrinfo   host_getaddrinfo
+#define getaddrinfo   musl_getaddrinfo
 #define __lookup_serv kboot_lookup_serv_stub
 
 #include "getaddrinfo.c"

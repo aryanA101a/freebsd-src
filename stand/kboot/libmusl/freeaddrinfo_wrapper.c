@@ -1,3 +1,3 @@
-#define freeaddrinfo host_freeaddrinfo
+#define freeaddrinfo musl_freeaddrinfo
 
 #include "freeaddrinfo.c"

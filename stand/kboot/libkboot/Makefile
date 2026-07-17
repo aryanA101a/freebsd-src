@@ -15,11 +15,8 @@ CLEANFILES+=		${TRUST_ANCHORS}
 
 BEARSSL=	${SRCTOP}/contrib/bearssl
 
-HOST_NET_CFLAGS=	-I${.CURDIR}/../libmusl
-
-CFLAGS.net.c+=	${HOST_NET_CFLAGS}
-CFLAGS.net.c+=	-I${BEARSSL}/inc
-CFLAGS.net.c+=	-Udouble -Ufloat
+CFLAGS.http.c+=	-I${.CURDIR}/../libmusl -I${BEARSSL}/inc
+CFLAGS.http.c+=	-Udouble -Ufloat
 
 .PATH:	${.CURDIR}/arch/${MACHINE_ARCH}
 CFLAGS+=	-I${.CURDIR} -I${.CURDIR}/arch/${MACHINE_ARCH}
@@ -29,7 +26,7 @@ SRCS=	crt1.c
 SRCS+=	dfk.c
 SRCS+=	host_syscall.S
 SRCS+=	host_syscalls.c
-SRCS+=	net.c
+SRCS+=	http.c
 SRCS+=	http_file_sink.c
 SRCS+=	seg.c
 SRCS+=	termios.c
