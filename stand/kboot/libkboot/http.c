@@ -1047,6 +1047,8 @@ http_get(http_req_t req)
 
 	if (sink == NULL)
 		return http_fail(HTTP_ERR_USAGE, "sink required");
+	if (req.url == NULL || req.url[0] == '\0')
+		return http_fail(HTTP_ERR_USAGE, "url required");
 
 	char c_url[URL_LENGTH];
 	int url_n = snprintf(c_url, sizeof(c_url), "%s", req.url);

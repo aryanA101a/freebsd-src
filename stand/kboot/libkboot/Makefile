@@ -3,7 +3,7 @@
 LIB=	kboot
 WARNS?=	4
 
-CERT_DIR=	${SRCTOP}/secure/caroot/trusted
+CERT_DIR?=	${SRCTOP}/secure/caroot/trusted
 TRUST_ANCHORS=	trust_anchors.inc
 BRSSL_TA=	${.OBJDIR:H}/tools/brssl_ta/brssl_ta
 

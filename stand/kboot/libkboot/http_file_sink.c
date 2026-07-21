@@ -78,11 +78,11 @@ void
 http_file_sink_init(struct http_file_sink *fs)
 {
 	*fs = (struct http_file_sink){
-        .sink = {
-            .open = http_file_sink_open,
-            .write = http_file_sink_write,
-            .close = http_file_sink_close,
-        },
-        .fd = -1,
-    };
+		.sink = {
+			.open = http_file_sink_open,
+			.write = http_file_sink_write,
+			.close = http_file_sink_close,
+		},
+		.fd = -1,
+	};
 }
