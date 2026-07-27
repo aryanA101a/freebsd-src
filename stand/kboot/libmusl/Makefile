@@ -52,6 +52,7 @@ MUSL_UPSTREAM_SRCS= \
 		getentropy.c \
 		getrandom.c \
 		getsockname.c \
+		getsockopt.c \
 		inet_aton.c \
 		inet_pton.c \
 		if_nametoindex.c \

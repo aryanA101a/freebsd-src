@@ -55,3 +55,10 @@ musl_fcntl(int fd, int cmd, long arg)
 {
 	return (fcntl(fd, cmd, arg));
 }
+
+int
+musl_getsockopt(int fd, int level, int optname, void *optval,
+    musl_socklen_t *optlen)
+{
+	return (getsockopt(fd, level, optname, optval, optlen));
+}

@@ -18,6 +18,8 @@
 #define MAX_REDIRECTS	   5
 #define MAX_INFO_RESPONSES 10
 #define IO_TIMEOUT_MS	   10000
+#define MAX_LINE_LENGTH		  8192
+#define MAX_RESPONSE_HEADER_BYTES (32 * 1024)
 
 struct line_buffer {
 	char *buffer;
@@ -82,6 +84,8 @@ http_error_name(http_error_t err)
 		return "header.invalid_content_length";
 	case HTTP_ERR_HEADER_UNSUPPORTED_TRANSFER_ENCODING:
 		return "header.unsupported_transfer_encoding";
+	case HTTP_ERR_HEADER_TOO_LARGE:
+		return "header.too_large";
 	case HTTP_ERR_BODY_INVALID_CHUNK_SIZE:
 		return "body.invalid_chunk_size";
 	case HTTP_ERR_BODY_TRUNCATED:
@@ -176,7 +180,7 @@ wait_for_socket(int fd, short events, int64_t deadline)
 		int n = musl_poll(&pfd, 1, timeout_ms);
 
 		if (n < 0) {
-			if (errno == EINTR)
+			if (errno == MUSL_EINTR)
 				continue;
 			return -1;
 		}
@@ -261,9 +265,8 @@ run_brssl_engine(struct conn *conn, unsigned int target, int64_t deadline)
 			if (wlen < 0) {
 				int saved_errno = errno;
 
-				if (saved_errno == EINTR ||
-				    saved_errno == EAGAIN ||
-				    saved_errno == EWOULDBLOCK)
+				if (saved_errno == MUSL_EINTR ||
+				    saved_errno == MUSL_EAGAIN)
 					continue;
 
 				errno = saved_errno;
@@ -292,9 +295,8 @@ run_brssl_engine(struct conn *conn, unsigned int target, int64_t deadline)
 			if (rlen < 0) {
 				int saved_errno = errno;
 
-				if (saved_errno == EINTR ||
-				    saved_errno == EAGAIN ||
-				    saved_errno == EWOULDBLOCK)
+				if (saved_errno == MUSL_EINTR ||
+				    saved_errno == MUSL_EAGAIN)
 					continue;
 
 				errno = saved_errno;
@@ -464,15 +466,23 @@ conn_close(struct conn *conn)
 }
 
 static int
-parse_url(char *url, struct url *result)
+parse_url(const char *url, struct url *result)
 {
+	const char *host_end;
+	const char *host_start;
+	const char *hostname_end;
+	const char *p;
+	const char *path_start;
+	const char *port_start;
+	const char *scheme_delim = "://";
+	const char *scheme_end;
+	size_t host_len;
+
 	if (url == NULL || result == NULL || url[0] == '\0')
 		return -1;
-
-	char *scheme_end;
-	char *host_start;
-	char *path_start;
-	const char *scheme_delim = "://";
+	for (p = url; *p != '\0'; p++)
+		if ((unsigned char)*p <= ' ')
+			return -1;
 
 	strcpy(result->protocol, "https");
 	strcpy(result->hostname, "");
@@ -500,11 +510,10 @@ parse_url(char *url, struct url *result)
 		strcpy(result->path, path_start);
 	}
 
-	char *host_end = path_start ? path_start :
-				      host_start + strlen(host_start);
-	char *port_start = memchr(host_start, ':', host_end - host_start);
-	char *hostname_end = port_start ? port_start : host_end;
-	size_t host_len = hostname_end - host_start;
+	host_end = path_start ? path_start : host_start + strlen(host_start);
+	port_start = memchr(host_start, ':', host_end - host_start);
+	hostname_end = port_start ? port_start : host_end;
+	host_len = hostname_end - host_start;
 	if (host_len == 0 || host_len >= HOST_LENGTH)
 		return -1;
 
@@ -615,6 +624,11 @@ read_line(struct conn *conn, struct line_buffer *line)
 			return -1;
 		}
 
+		if (line->size >= MAX_LINE_LENGTH) {
+			errno = EMSGSIZE;
+			return -1;
+		}
+
 		line->buffer[line->size++] = c;
 
 		if (line->size == line->capacity) {
@@ -693,6 +707,134 @@ output_name_from_path(const char *path)
 }
 
 static int
+build_redirect_url(char *result, size_t result_len, const struct url *cur,
+    const char *location)
+{
+	struct url next;
+	const char *query;
+	int has_port;
+	int path_len;
+	int n;
+
+	has_port = cur->port[0] != '\0';
+
+	if (location[0] == '\0' || location[0] == '#')
+		return http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+		    "unsupported Location");
+
+	if (strstr(location, "://") != NULL) {
+		if (parse_url(location, &next) == -1)
+			return http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+			    "unsupported Location");
+		if (strcasecmp(cur->protocol, "https") == 0 &&
+		    strcasecmp(next.protocol, "http") == 0)
+			return http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+			    "unsupported Location downgrade");
+		n = snprintf(result, result_len, "%s", location);
+		goto out;
+	}
+
+	if (location[0] == '/' && location[1] == '/') {
+		n = snprintf(result, result_len, "%s:%s", cur->protocol,
+		    location);
+		goto out;
+	}
+
+	if (location[0] == '/') {
+		if (has_port)
+			n = snprintf(result, result_len, "%s://%s:%s%s",
+			    cur->protocol, cur->hostname, cur->port, location);
+		else
+			n = snprintf(result, result_len, "%s://%s%s",
+			    cur->protocol, cur->hostname, location);
+		goto out;
+	}
+
+	if (location[0] == '?') {
+		query = strchr(cur->path, '?');
+		path_len = query == NULL ? (int)strlen(cur->path) :
+					   (int)(query - cur->path);
+		if (has_port)
+			n = snprintf(result, result_len, "%s://%s:%s%.*s%s",
+			    cur->protocol, cur->hostname, cur->port, path_len,
+			    cur->path, location);
+		else
+			n = snprintf(result, result_len, "%s://%s%.*s%s",
+			    cur->protocol, cur->hostname, path_len, cur->path,
+			    location);
+		goto out;
+	}
+
+	return http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED, "unsupported Location");
+
+out:
+	if (n < 0 || (size_t)n >= result_len)
+		return http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+		    "unsupported location size");
+
+	return HTTP_OK;
+}
+
+static int
+connect_addr(struct conn *conn, const musl_addrinfo *addr)
+{
+	int flags;
+	int64_t deadline;
+
+	conn->fd = musl_socket(addr->ai_family, addr->ai_socktype,
+	    addr->ai_protocol);
+	if (conn->fd < 0)
+		return -1;
+
+	flags = musl_fcntl(conn->fd, MUSL_F_GETFL, 0);
+	if (flags < 0 ||
+	    musl_fcntl(conn->fd, MUSL_F_SETFL, flags | MUSL_O_NONBLOCK) < 0)
+		goto fail;
+
+	deadline = deadline_after(IO_TIMEOUT_MS);
+	if (deadline < 0)
+		goto fail;
+
+	for (;;) {
+		int err;
+
+		if (musl_connect(conn->fd, addr->ai_addr, addr->ai_addrlen) ==
+		    0)
+			return 0;
+
+		err = errno;
+		if (err == MUSL_EINTR)
+			continue;
+		if (err == MUSL_EISCONN)
+			return 0;
+		if (err == MUSL_EINPROGRESS || err == MUSL_EALREADY) {
+			int so_error;
+			musl_socklen_t so_error_len;
+
+			if (wait_for_socket(conn->fd, MUSL_POLLOUT, deadline) <
+			    0)
+				goto fail;
+
+			so_error = 0;
+			so_error_len = sizeof(so_error);
+			if (musl_getsockopt(conn->fd, MUSL_SOL_SOCKET,
+				MUSL_SO_ERROR, &so_error, &so_error_len) < 0)
+				goto fail;
+			if (so_error == 0)
+				return 0;
+
+			errno = so_error;
+		}
+
+		goto fail;
+	}
+
+fail:
+	conn_close(conn);
+	return -1;
+}
+
+static int
 connect_url(struct conn *conn, const struct url *url)
 {
 	const char *service;
@@ -718,38 +860,14 @@ connect_url(struct conn *conn, const struct url *url)
 	}
 
 	for (dns_res = dns_res0; dns_res; dns_res = dns_res->ai_next) {
-		conn->fd = musl_socket(dns_res->ai_family, dns_res->ai_socktype,
-		    dns_res->ai_protocol);
-
-		if (conn->fd < 0) {
-			continue;
-		}
-		int e;
-		while ((e = musl_connect(conn->fd, dns_res->ai_addr,
-			    dns_res->ai_addrlen)) < 0) {
-			if (errno == EINTR)
-				continue;
+		if (connect_addr(conn, dns_res) == 0)
 			break;
-		}
-		if (e < 0) {
-			conn_close(conn);
-			continue;
-		}
-
-		break;
 	}
 
 	musl_freeaddrinfo(dns_res0);
 
 	if (conn->fd < 0)
 		return http_fail(HTTP_ERR_CONNECT, "cannot connect");
-
-	int flags = musl_fcntl(conn->fd, MUSL_F_GETFL, 0);
-	if (flags < 0 ||
-	    musl_fcntl(conn->fd, MUSL_F_SETFL, flags | MUSL_O_NONBLOCK) < 0) {
-		conn_close(conn);
-		return http_fail(HTTP_ERR_CONNECT, "setting nonblocking mode");
-	}
 
 	if (strcasecmp(url->protocol, "https") == 0) {
 		br_ssl_client_init_full(&conn->tls.client, &conn->tls.x509, TAs,
@@ -778,8 +896,9 @@ static int
 read_status(struct conn *conn, int *status, struct line_buffer *line)
 {
 	int info_responses = 0;
+	size_t header_size;
 
-	while (1) {
+	for (;;) {
 		if (read_line(conn, line) == -1) {
 			return http_fail(HTTP_ERR_IO, "reading status line");
 		}
@@ -798,11 +917,23 @@ read_status(struct conn *conn, int *status, struct line_buffer *line)
 				return http_fail(HTTP_ERR_IO,
 				    "max info headers reached");
 
+			header_size = 0;
+
 			/* Discard headers. */
-			while (1) {
-				if (read_line(conn, line) == -1)
+			for (;;) {
+				if (read_line(conn, line) == -1) {
+					if (errno == EMSGSIZE)
+						return http_fail(
+						    HTTP_ERR_HEADER_TOO_LARGE,
+						    NULL);
 					return http_fail(HTTP_ERR_IO,
 					    "reading interim response header");
+				}
+				if (line->size >
+				    MAX_RESPONSE_HEADER_BYTES - header_size)
+					return http_fail(
+					    HTTP_ERR_HEADER_TOO_LARGE, NULL);
+				header_size += line->size;
 
 				if (strcmp(line->buffer, "\r\n") == 0 ||
 				    strcmp(line->buffer, "\n") == 0)
@@ -819,19 +950,26 @@ static int
 read_headers(struct conn *conn, struct http_headers *headers,
     struct line_buffer *line)
 {
+	size_t header_size = 0;
+	char *col = NULL;
+	char *header_name = NULL;
+	char *header_value = NULL;
+
 	headers->content_length = -1;
 	headers->chunked = 0;
 	headers->has_location = 0;
 	headers->location[0] = '\0';
 
-	char *col = NULL;
-	char *header_name = NULL;
-	char *header_value = NULL;
-
-	while (1) {
+	for (;;) {
 		if (read_line(conn, line) == -1) {
+			if (errno == EMSGSIZE)
+				return http_fail(HTTP_ERR_HEADER_TOO_LARGE,
+				    NULL);
 			return http_fail(HTTP_ERR_IO, "reading header");
 		}
+		if (line->size > MAX_RESPONSE_HEADER_BYTES - header_size)
+			return http_fail(HTTP_ERR_HEADER_TOO_LARGE, NULL);
+		header_size += line->size;
 
 		if (strcmp(line->buffer, "\r\n") == 0)
 			break;
@@ -904,7 +1042,7 @@ read_body(struct conn *conn, sink_t *sink, const struct http_headers *headers,
 
 	if (headers->chunked) {
 		size_t down_n = 0;
-		while (1) {
+		for (;;) {
 			if (read_line(conn, line) == -1) {
 				return http_fail(HTTP_ERR_BODY_TRUNCATED, NULL);
 			}
@@ -1035,7 +1173,7 @@ int
 http_get(http_req_t req)
 {
 	struct conn conn = { .fd = -1 };
-	int result;
+	int err;
 	int no_body;
 
 	char req_buf[6114];
@@ -1066,17 +1204,17 @@ http_get(http_req_t req)
 		ssize_t n = 0;
 		no_body = 0;
 		int status;
-		result = HTTP_OK;
+		err = HTTP_OK;
 		p_url = (struct url) { 0 };
 		char authority[HOST_LENGTH + 7];
 
 		if (parse_url(c_url, &p_url) == -1) {
-			result = http_fail(HTTP_ERR_URL_INVALID, req.url);
+			err = http_fail(HTTP_ERR_URL_INVALID, req.url);
 			goto cleanup;
 		}
 
-		result = connect_url(&conn, &p_url);
-		if (result != HTTP_OK)
+		err = connect_url(&conn, &p_url);
+		if (err != HTTP_OK)
 			goto cleanup;
 
 		if (p_url.port[0] != '\0')
@@ -1086,7 +1224,7 @@ http_get(http_req_t req)
 			n = snprintf(authority, sizeof(authority), "%s",
 			    p_url.hostname);
 		if (n < 0 || (size_t)n >= sizeof(authority)) {
-			result = http_fail(HTTP_ERR_URL_INVALID, req.url);
+			err = http_fail(HTTP_ERR_URL_INVALID, req.url);
 			goto cleanup;
 		}
 
@@ -1100,17 +1238,17 @@ http_get(http_req_t req)
 		    "\r\n",
 		    p_url.path, authority);
 		if (n < 0 || (size_t)n >= sizeof(req_buf)) {
-			result = http_fail(HTTP_ERR_REQUEST_TOO_LARGE, NULL);
+			err = http_fail(HTTP_ERR_REQUEST_TOO_LARGE, NULL);
 			goto cleanup;
 		}
 
 		if (write_exact(&conn, req_buf, n) == -1) {
-			result = http_fail(HTTP_ERR_IO, "sending request");
+			err = http_fail(HTTP_ERR_IO, "sending request");
 			goto cleanup;
 		}
 
-		result = read_status(&conn, &status, &line);
-		if (result != HTTP_OK)
+		err = read_status(&conn, &status, &line);
+		if (err != HTTP_OK)
 			goto cleanup;
 
 		switch (status) {
@@ -1130,77 +1268,61 @@ http_get(http_req_t req)
 			break;
 
 		case 206:
-			result = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+			err = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
 			    "206 Partial Content without Range support");
 			goto cleanup;
 
 		case 401:
-			result = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+			err = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
 			    "401 Authorization Required");
 			goto cleanup;
 
 		case 407:
-			result = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+			err = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
 			    "407 Proxy Authentication Required");
 			goto cleanup;
 
 		default:
 			if (status >= 500 && status <= 599) {
-				result = http_fail(
-				    HTTP_ERR_RESPONSE_SERVER_ERROR, NULL);
+				err = http_fail(HTTP_ERR_RESPONSE_SERVER_ERROR,
+				    NULL);
 				goto cleanup;
 			}
 
 			if (status >= 400 && status <= 499) {
-				result = http_fail(
-				    HTTP_ERR_RESPONSE_CLIENT_ERROR, NULL);
+				err = http_fail(HTTP_ERR_RESPONSE_CLIENT_ERROR,
+				    NULL);
 				goto cleanup;
 			}
 
-			result = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED, NULL);
+			err = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED, NULL);
 			goto cleanup;
 		}
 
 		/* Read headers. */
 
-		result = read_headers(&conn, &headers, &line);
-		if (result != HTTP_OK)
+		err = read_headers(&conn, &headers, &line);
+		if (err != HTTP_OK)
 			goto cleanup;
 
 		if (redirect) {
 			if (!headers.has_location) {
-				result =
-				    http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
-					"redirect without Location");
+				err = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+				    "redirect without Location");
 				goto cleanup;
 			}
 
-			if (headers.location[0] == '/') {
-				if (p_url.port[0] != '\0')
-					url_n = snprintf(c_url, sizeof(c_url),
-					    "%s://%s:%s%s", p_url.protocol,
-					    p_url.hostname, p_url.port,
-					    headers.location);
-				else
-					url_n = snprintf(c_url, sizeof(c_url),
-					    "%s://%s%s", p_url.protocol,
-					    p_url.hostname, headers.location);
-			} else
-				url_n = snprintf(c_url, sizeof(c_url), "%s",
-				    headers.location);
-			if (url_n < 0 || (size_t)url_n >= sizeof(c_url)) {
-				result =
-				    http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
-					"unsupported location size");
+			err = build_redirect_url(c_url, sizeof(c_url), &p_url,
+			    headers.location);
+			if (err != HTTP_OK)
 				goto cleanup;
-			}
 
 			conn_close(&conn);
 		}
 	} while (redirect && ++redirects <= MAX_REDIRECTS);
 
 	if (redirect) {
-		result = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
+		err = http_fail(HTTP_ERR_RESPONSE_UNSUPPORTED,
 		    "too many redirects");
 		goto cleanup;
 	}
@@ -1209,13 +1331,13 @@ http_get(http_req_t req)
 		goto cleanup;
 	}
 
-	result = sink->open(sink, output_name_from_path(p_url.path));
-	if (result != HTTP_OK)
+	err = sink->open(sink, output_name_from_path(p_url.path));
+	if (err != HTTP_OK)
 		goto cleanup;
 	sink_open = 1;
 
-	result = read_body(&conn, sink, &headers, &req, &line);
-	if (result != HTTP_OK)
+	err = read_body(&conn, sink, &headers, &req, &line);
+	if (err != HTTP_OK)
 		goto cleanup;
 
 cleanup:
@@ -1225,5 +1347,5 @@ cleanup:
 		free(line.buffer);
 	conn_close(&conn);
 
-	return result;
+	return err;
 }

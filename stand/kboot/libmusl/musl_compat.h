@@ -10,9 +10,14 @@
 #define MUSL_AF_INET6		10
 #define MUSL_SOCK_STREAM	1
 #define MUSL_IPPROTO_TCP	6
+#define MUSL_SOL_SOCKET		1
+#define MUSL_SO_ERROR		4
 #define MUSL_CLOCK_MONOTONIC	1
 #define MUSL_EINTR		4
 #define MUSL_EAGAIN		11
+#define MUSL_EISCONN		106
+#define MUSL_EALREADY		114
+#define MUSL_EINPROGRESS	115
 
 #define MUSL_POLLIN		0x001
 #define MUSL_POLLOUT		0x004
@@ -89,6 +94,7 @@ int		musl_poll(struct musl_pollfd *, musl_nfds_t, int);
 ssize_t		musl_recv(int, void *, size_t, int);
 ssize_t		musl_send(int, const void *, size_t, int);
 int		musl_fcntl(int, int, long);
+int musl_getsockopt(int, int, int, void *, musl_socklen_t *);
 int		musl_getaddrinfo(const char *, const char *,
 		    const musl_addrinfo *, musl_addrinfo **);
 void		musl_freeaddrinfo(musl_addrinfo *);

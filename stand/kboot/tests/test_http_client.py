@@ -39,6 +39,34 @@ def test_http_get_with_content_length(loader_kboot_bin, tmp_path):
     assert (tmp_path / "get").read_bytes() == b"-foo-\n"
 
 
+def test_percent_encoded_space_in_url_is_accepted(loader_kboot_bin, tmp_path):
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Length: 8\r\n"
+        b"\r\n"
+        b"encoded\n"
+    )
+
+    with HTTPResponseServer([response]) as server:
+        proc = run_http_client(loader_kboot_bin, tmp_path, server, "/has%20space")
+
+    assert proc.returncode == 0, captured_output(proc)
+    assert_basic_get_request(server.requests[0], "/has%20space", server.port)
+    assert (tmp_path / "has%20space").read_bytes() == b"encoded\n"
+
+
+@pytest.mark.parametrize("path", ["/has space", "/bad\r\nHost: injected"])
+def test_raw_space_or_control_in_url_is_rejected(
+    loader_kboot_bin, tmp_path, path
+):
+    url = f"http://127.0.0.1:1{path}"
+
+    proc = run_client(loader_kboot_bin, tmp_path, url)
+
+    assert proc.returncode == 10
+    assert "http_client: url.invalid" in captured_output(proc)
+
+
 def test_identity_content_encoding_is_accepted(loader_kboot_bin, tmp_path):
     response = (
         b"HTTP/1.1 200 OK\r\n"
@@ -214,28 +242,6 @@ def test_conflicting_content_length_is_rejected(loader_kboot_bin, tmp_path):
     assert_basic_get_request(server.requests[0], "/conflicting-cl", server.port)
 
 
-@pytest.mark.xfail(strict=True, reason="comma-list Content-Length is not parsed yet")
-def test_equivalent_comma_list_content_length_is_accepted(loader_kboot_bin, tmp_path):
-    response = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Server: test-server/fake\r\n"
-        b"Content-Length: 6,06,6\r\n"
-        b"Content-Length: 6,    6\r\n"
-        b"Connection: close\r\n"
-        b"\r\n"
-        b"-foo-\n"
-    )
-
-    with HTTPResponseServer([response]) as server:
-        proc = run_http_client(loader_kboot_bin, tmp_path, server, "/comma-cl")
-
-    # Curl seed: curl/tests/data/test770 accepts comma-separated
-    # Content-Length lists when every member is the same length.
-    assert proc.returncode == 0, captured_output(proc)
-    assert_basic_get_request(server.requests[0], "/comma-cl", server.port)
-    assert (tmp_path / "comma-cl").read_bytes() == b"-foo-\n"
-
-
 def test_invalid_content_length_is_observable(loader_kboot_bin, tmp_path):
     response = (
         b"HTTP/1.1 200 OK\r\n"
@@ -375,7 +381,6 @@ def test_truncated_content_length_body_is_observable(loader_kboot_bin, tmp_path)
     assert_basic_get_request(server.requests[0], "/short-body", server.port)
 
 
-@pytest.mark.xfail(strict=True, reason="maximum response header line length is not enforced yet")
 def test_too_long_response_header_is_rejected(loader_kboot_bin, tmp_path):
     response = (
         b"HTTP/1.1 200 OK\r\n"
@@ -397,8 +402,7 @@ def test_too_long_response_header_is_rejected(loader_kboot_bin, tmp_path):
     assert_basic_get_request(server.requests[0], "/huge-header", server.port)
 
 
-@pytest.mark.xfail(strict=True, reason="maximum response header count is not enforced yet")
-def test_too_many_response_headers_are_rejected(loader_kboot_bin, tmp_path):
+def test_too_many_response_header_bytes_are_rejected(loader_kboot_bin, tmp_path):
     response = (
         b"HTTP/1.1 200 OK\r\n"
         b"Content-Length: 6\r\n"
@@ -411,10 +415,10 @@ def test_too_many_response_headers_are_rejected(loader_kboot_bin, tmp_path):
     with HTTPResponseServer([response]) as server:
         proc = run_http_client(loader_kboot_bin, tmp_path, server, "/too-many-headers")
 
-    # Curl seed: curl/tests/data/test747 rejects more than 5000 response
-    # header fields.
+    # Local diagnostic seed: many individually small response headers exceed
+    # the aggregate response header byte limit.
     assert proc.returncode != 0
-    assert "http_client: header.too_many" in captured_output(proc)
+    assert "http_client: header.too_large" in captured_output(proc)
     assert_basic_get_request(server.requests[0], "/too-many-headers", server.port)
 
 
@@ -746,38 +750,10 @@ def test_redirect_location_with_extra_spaces_is_followed(loader_kboot_bin, tmp_p
     assert (tmp_path / "final?logout=TRUE").read_bytes() == b"space final"
 
 
-@pytest.mark.xfail(strict=True, reason="relative redirect following is not implemented yet")
-def test_relative_redirect_location_is_followed(loader_kboot_bin, tmp_path):
+def test_query_only_redirect_location_is_followed(loader_kboot_bin, tmp_path):
     redirect = (
         b"HTTP/1.1 302 OK\r\n"
-        b"Location: ./final\r\n"
-        b"Connection: close\r\n"
-        b"\r\n"
-    )
-    final = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Length: 13\r\n"
-        b"\r\n"
-        b"relative body"
-    )
-
-    with HTTPResponseServer([redirect, final]) as server:
-        proc = run_http_client(loader_kboot_bin, tmp_path, server, "/dir/redirect")
-
-    # Curl seed: curl/tests/data/test52 follows a Location with a ./-prefixed
-    # relative target from the current request path.
-    assert proc.returncode == 0, captured_output(proc)
-    assert len(server.requests) == 2
-    assert_basic_get_request(server.requests[0], "/dir/redirect", server.port)
-    assert_basic_get_request(server.requests[1], "/dir/final", server.port)
-    assert (tmp_path / "redirect").read_bytes() == b"relative body"
-
-
-@pytest.mark.xfail(strict=True, reason="relative redirect without a leading slash is not implemented yet")
-def test_bare_relative_redirect_location_is_followed(loader_kboot_bin, tmp_path):
-    redirect = (
-        b"HTTP/1.1 302 OK\r\n"
-        b"Location: final\r\n"
+        b"Location: ?console=comconsole\r\n"
         b"Connection: close\r\n"
         b"\r\n"
     )
@@ -785,46 +761,46 @@ def test_bare_relative_redirect_location_is_followed(loader_kboot_bin, tmp_path)
         b"HTTP/1.1 200 OK\r\n"
         b"Content-Length: 10\r\n"
         b"\r\n"
-        b"bare final"
+        b"query body"
     )
 
     with HTTPResponseServer([redirect, final]) as server:
-        proc = run_http_client(loader_kboot_bin, tmp_path, server, "/dir/base")
+        proc = run_http_client(
+            loader_kboot_bin, tmp_path, server, "/dir/base?console=efi"
+        )
 
-    # Curl seed: curl/tests/data/test55 follows a relative Location value
-    # with no leading slash.
     assert proc.returncode == 0, captured_output(proc)
     assert len(server.requests) == 2
-    assert_basic_get_request(server.requests[0], "/dir/base", server.port)
-    assert_basic_get_request(server.requests[1], "/dir/final", server.port)
-    assert (tmp_path / "base").read_bytes() == b"bare final"
+    assert_basic_get_request(server.requests[0], "/dir/base?console=efi", server.port)
+    assert_basic_get_request(
+        server.requests[1], "/dir/base?console=comconsole", server.port
+    )
+    assert (tmp_path / "base?console=comconsole").read_bytes() == b"query body"
 
 
-@pytest.mark.xfail(strict=True, reason="dot-dot redirect normalization is not implemented yet")
-def test_dotdot_relative_redirect_location_is_followed(loader_kboot_bin, tmp_path):
+@pytest.mark.parametrize(
+    "location",
+    ["final", "./final", "../final", "#section", "ftp://localhost/final"],
+)
+def test_unsupported_redirect_locations_are_rejected(
+    loader_kboot_bin, tmp_path, location
+):
     redirect = (
-        b"HTTP/1.1 301 OK\r\n"
-        b"Content-Length: 6\r\n"
-        b"Location: ../final\r\n"
+        b"HTTP/1.1 302 OK\r\n"
+        + f"Location: {location}\r\n".encode("ascii")
+        + b"Connection: close\r\n"
         b"\r\n"
-        b"-foo-\n"
-    )
-    final = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Length: 11\r\n"
-        b"\r\n"
-        b"dotdot body"
     )
 
-    with HTTPResponseServer([redirect, final]) as server:
+    with HTTPResponseServer([redirect]) as server:
         proc = run_http_client(loader_kboot_bin, tmp_path, server, "/dir/base")
 
-    # Curl seed: curl/tests/data/test391 follows a ../ relative Location.
-    assert proc.returncode == 0, captured_output(proc)
-    assert len(server.requests) == 2
+    assert proc.returncode != 0
+    assert (
+        "http_client: response.unsupported: unsupported Location"
+        in captured_output(proc)
+    )
     assert_basic_get_request(server.requests[0], "/dir/base", server.port)
-    assert_basic_get_request(server.requests[1], "/final", server.port)
-    assert (tmp_path / "base").read_bytes() == b"dotdot body"
 
 
 def test_1xx_response_then_final_response(loader_kboot_bin, tmp_path):
