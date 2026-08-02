@@ -9,6 +9,9 @@ WARNS?=	4
 
 CFLAGS+=	-I${BEARSSL_SRC}
 
+# Avoid x86 intrinsics.
+CFLAGS+=	-DBR_i386=0 -DBR_amd64=0
+
 # BearSSL uses getentropy()
 CFLAGS.sysrng.c+=	-include ${KBOOTSRC}/libmusl/musl_compat.h
 # Disable the /dev/urandom fallback as it reaches libsa open() instead of Linux
