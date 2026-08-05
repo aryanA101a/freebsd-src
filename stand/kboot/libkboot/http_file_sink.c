@@ -45,37 +45,74 @@ static int
 http_file_sink_open(struct http_sink *sink, const char *name)
 {
 	struct http_file_sink *fs;
+	int n;
 
 	fs = (struct http_file_sink *)sink;
-	fs->fd = host_open(name, HOST_O_WRONLY | HOST_O_CREAT | HOST_O_TRUNC,
-	    0666);
-	if (is_linux_error(fs->fd)) {
-		errno = host_to_stand_errno(fs->fd);
-		fs->fd = -1;
-	}
-	if (fs->fd < 0) {
-		printf("http_client: %s: %s\n", http_error_name(HTTP_ERR_IO),
-		    name);
-		return HTTP_ERR_IO;
+	fs->output_path[0] = '\0';
+	if (fs->dest_dir == NULL || fs->dest_dir[0] == '\0' || name == NULL ||
+	    name[0] == '\0' || strcmp(name, ".") == 0 ||
+	    strcmp(name, "..") == 0 || strchr(name, '/') != NULL) {
+		errno = EINVAL;
+		goto fail;
 	}
 
-	return HTTP_OK;
+	n = snprintf(fs->output_path, sizeof(fs->output_path), "%s/%s",
+	    fs->dest_dir, name);
+	if (n < 0) {
+		errno = EIO;
+		goto fail;
+	}
+	if ((size_t)n >= sizeof(fs->output_path)) {
+		errno = ENAMETOOLONG;
+		goto fail;
+	}
+
+	fs->fd = host_open(fs->output_path,
+	    HOST_O_WRONLY | HOST_O_CREAT | HOST_O_TRUNC, 0666);
+	if (fs->fd < 0) {
+		errno = is_linux_error(fs->fd) ?
+		    host_to_stand_errno(fs->fd) : EIO;
+		fs->fd = -1;
+		goto fail;
+	}
+
+	return 0;
+
+fail:
+	fs->output_path[0] = '\0';
+	return -1;
 }
 
-static void
-http_file_sink_close(struct http_sink *sink)
+static int
+http_file_sink_close(struct http_sink *sink, bool complete)
 {
 	struct http_file_sink *fs;
+	int rv;
 
 	fs = (struct http_file_sink *)sink;
 	if (fs->fd >= 0) {
 		host_close(fs->fd);
 		fs->fd = -1;
 	}
+
+	if (!complete) {
+		rv = host_unlink(fs->output_path);
+		fs->output_path[0] = '\0';
+		if (is_linux_error(rv)) {
+			errno = host_to_stand_errno(rv);
+			return -1;
+		}
+		if (rv < 0) {
+			errno = EIO;
+			return -1;
+		}
+	}
+
+	return 0;
 }
 
 void
-http_file_sink_init(struct http_file_sink *fs)
+http_file_sink_init(struct http_file_sink *fs, const char *dest_dir)
 {
 	*fs = (struct http_file_sink){
 		.sink = {
@@ -83,6 +120,7 @@ http_file_sink_init(struct http_file_sink *fs)
 			.write = http_file_sink_write,
 			.close = http_file_sink_close,
 		},
+		.dest_dir = dest_dir,
 		.fd = -1,
 	};
 }

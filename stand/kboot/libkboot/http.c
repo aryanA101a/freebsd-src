@@ -694,16 +694,25 @@ parse_status_line(char *line, int *status)
 	return 0;
 }
 
-static const char *
-output_name_from_path(const char *path)
+static void
+output_name_from_path(const char *path, char *name)
 {
-	const char *slash;
+	const char *end, *p, *start;
+	size_t len;
 
-	slash = strrchr(path, '/');
-	if (slash == NULL || slash[1] == '\0')
-		return "unknown";
+	end = path + strcspn(path, "?#");
+	start = path;
+	for (p = path; p < end; p++)
+		if (*p == '/')
+			start = p + 1;
+	if (start == end) {
+		start = "unknown";
+		end = start + strlen(start);
+	}
 
-	return slash + 1;
+	len = end - start;
+	memcpy(name, start, len);
+	name[len] = '\0';
 }
 
 static int
@@ -1101,7 +1110,7 @@ read_body(struct conn *conn, sink_t *sink, const struct http_headers *headers,
 					    "reading chunk body");
 				}
 
-				if (sink->write(sink, res_buf, rn) == -1)
+				if (sink->write(sink, res_buf, rn) != 0)
 					return http_fail(HTTP_ERR_IO,
 					    "writing output");
 
@@ -1136,7 +1145,7 @@ read_body(struct conn *conn, sink_t *sink, const struct http_headers *headers,
 				return http_fail(HTTP_ERR_IO, "reading body");
 			}
 
-			if (sink->write(sink, res_buf, rn) == -1)
+			if (sink->write(sink, res_buf, rn) != 0)
 				return http_fail(HTTP_ERR_IO, "writing output");
 			total -= rn;
 			if (req->on_progress)
@@ -1156,7 +1165,7 @@ read_body(struct conn *conn, sink_t *sink, const struct http_headers *headers,
 			if (rn <= 0)
 				break;
 
-			if (sink->write(sink, res_buf, rn) == -1)
+			if (sink->write(sink, res_buf, rn) != 0)
 				return http_fail(HTTP_ERR_IO, "writing output");
 			down_n += rn;
 			if (req->on_progress)
@@ -1177,6 +1186,7 @@ http_get(http_req_t req)
 	int no_body;
 
 	char req_buf[6114];
+	char output_name[PATH_LENGTH];
 	struct line_buffer line = { 0 };
 
 	sink_t *sink = req.sink;
@@ -1212,6 +1222,8 @@ http_get(http_req_t req)
 			err = http_fail(HTTP_ERR_URL_INVALID, req.url);
 			goto cleanup;
 		}
+		if (redirects == 0)
+			output_name_from_path(p_url.path, output_name);
 
 		err = connect_url(&conn, &p_url);
 		if (err != HTTP_OK)
@@ -1331,9 +1343,11 @@ http_get(http_req_t req)
 		goto cleanup;
 	}
 
-	err = sink->open(sink, output_name_from_path(p_url.path));
-	if (err != HTTP_OK)
+	err = sink->open(sink, output_name);
+	if (err != 0) {
+		err = http_fail(HTTP_ERR_IO, "opening output");
 		goto cleanup;
+	}
 	sink_open = 1;
 
 	err = read_body(&conn, sink, &headers, &req, &line);
@@ -1341,8 +1355,13 @@ http_get(http_req_t req)
 		goto cleanup;
 
 cleanup:
-	if (sink_open)
-		sink->close(sink);
+	if (sink_open) {
+		int close_error;
+
+		close_error = sink->close(sink, err == HTTP_OK);
+		if (close_error != 0 && err == HTTP_OK)
+			err = http_fail(HTTP_ERR_IO, "closing output");
+	}
 	if (line.buffer)
 		free(line.buffer);
 	conn_close(&conn);

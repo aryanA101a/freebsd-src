@@ -379,6 +379,7 @@ def test_truncated_content_length_body_is_observable(loader_kboot_bin, tmp_path)
     assert proc.returncode != 0
     assert "http_client: body.truncated" in captured_output(proc)
     assert_basic_get_request(server.requests[0], "/short-body", server.port)
+    assert not (tmp_path / "short-body").exists()
 
 
 def test_too_long_response_header_is_rejected(loader_kboot_bin, tmp_path):
@@ -721,7 +722,7 @@ def test_redirect_location_is_followed(loader_kboot_bin, tmp_path):
     assert len(server.requests) == 2
     assert_basic_get_request(server.requests[0], "/redirect", server.port)
     assert_basic_get_request(server.requests[1], "/final", server.port)
-    assert (tmp_path / "final").read_bytes() == b"final body"
+    assert (tmp_path / "redirect").read_bytes() == b"final body"
 
 
 def test_redirect_location_with_extra_spaces_is_followed(loader_kboot_bin, tmp_path):
@@ -747,7 +748,7 @@ def test_redirect_location_with_extra_spaces_is_followed(loader_kboot_bin, tmp_p
     assert len(server.requests) == 2
     assert_basic_get_request(server.requests[0], "/want/redirect", server.port)
     assert_basic_get_request(server.requests[1], "/spaced/final?logout=TRUE", server.port)
-    assert (tmp_path / "final?logout=TRUE").read_bytes() == b"space final"
+    assert (tmp_path / "redirect").read_bytes() == b"space final"
 
 
 def test_query_only_redirect_location_is_followed(loader_kboot_bin, tmp_path):
@@ -775,7 +776,7 @@ def test_query_only_redirect_location_is_followed(loader_kboot_bin, tmp_path):
     assert_basic_get_request(
         server.requests[1], "/dir/base?console=comconsole", server.port
     )
-    assert (tmp_path / "base?console=comconsole").read_bytes() == b"query body"
+    assert (tmp_path / "base").read_bytes() == b"query body"
 
 
 @pytest.mark.parametrize(

@@ -5,7 +5,7 @@
 typedef struct http_sink {
 	int (*open)(struct http_sink *s, const char *name);
 	int (*write)(struct http_sink *s, const void *data, size_t len);
-	void (*close)(struct http_sink *s);
+	int (*close)(struct http_sink *s, bool complete);
 } sink_t;
 
 typedef struct {

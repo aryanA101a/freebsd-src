@@ -138,7 +138,7 @@ def test_http_redirect_to_https(loader_kboot_bin, tls_material, tmp_path):
             )
 
     assert proc.returncode == 0, captured_output(proc)
-    assert (tmp_path / "final").read_bytes() == b"final"
+    assert (tmp_path / "redirect").read_bytes() == b"final"
     assert_basic_get_request(
         tls_server.requests[0],
         "/final",

@@ -417,7 +417,7 @@ http_test_get(int argc, const char **argv)
 		return (HTTP_ERR_USAGE);
 	}
 
-	http_file_sink_init(&fs);
+	http_file_sink_init(&fs, ".");
 	req = (http_req_t){
 		.url = url,
 		.sink = &fs.sink,
